@@ -1,0 +1,26 @@
+# User media and generated audio data
+*.wav
+*.mp3
+*.flac
+*.wma
+*.pcm
+*.iso
+*.cue
+*.bin
+
+# Build and editor output
+bin/
+obj/
+.vs/
+.vscode/
+*.user
+*.suo
+
+# Environment values and private signing material
+.env
+.env.*
+!.env.example
+*.pfx
+*.p12
+*.pem
+*.key
