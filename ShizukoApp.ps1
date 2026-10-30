@@ -19,6 +19,10 @@ function Read-Wav([string]$Path) {
    if ($id -eq 'fmt ') {
     if ($n -lt 16) { throw 'WAV形式情報が壊れています。' }
     $fmt = @{ Codec=$r.ReadUInt16(); Ch=$r.ReadUInt16(); Rate=$r.ReadUInt32(); ByteRate=$r.ReadUInt32(); Align=$r.ReadUInt16(); Bits=$r.ReadUInt16() }
+    if ($fmt.Codec -eq 0xFFFE) {
+     if ($n -lt 40) { throw 'WAV形式情報が壊れています。' }
+     [void]$r.ReadBytes(8); if ([guid]::new($r.ReadBytes(16)) -eq [guid]'00000001-0000-0010-8000-00aa00389b71') { $fmt.Codec = 1 }
+    }
    } elseif ($id -eq 'data') { $off = $st; $len = $n }
    $s.Position = $st + $n + ($n % 2)
   }
@@ -43,24 +47,46 @@ $up=[System.Windows.Forms.Button]::new();$up.Text='上へ';$up.Location=[System.
 $down=[System.Windows.Forms.Button]::new();$down.Text='下へ';$down.Location=[System.Drawing.Point]::new(599,520);$down.Size=[System.Drawing.Size]::new(55,34);$down.Anchor='Bottom,Right';$f.Controls.Add($down)
 $burn=[System.Windows.Forms.Button]::new();$burn.Text='書き込み';$burn.Location=[System.Drawing.Point]::new(657,518);$burn.Size=[System.Drawing.Size]::new(128,38);$burn.Anchor='Bottom,Right';$f.Controls.Add($burn)
 function Refresh-List{$lv.BeginUpdate();$lv.Items.Clear();for($i=0;$i-lt$script:Tracks.Count;$i++){$t=$script:Tracks[$i];$x=[System.Windows.Forms.ListViewItem]::new(('{0}. {1}'-f($i+1),[IO.Path]::GetFileName($t.Path)));$s=[int][math]::Round($t.Seconds);[void]$x.SubItems.Add(('{0:D2}:{1:D2}'-f[int][math]::Floor($s/60),($s%60)));[void]$x.SubItems.Add([IO.Path]::GetDirectoryName($t.Path));[void]$lv.Items.Add($x)};$lv.EndUpdate();$sum=($script:Tracks|Measure-Object Seconds -Sum).Sum;if($null-eq$sum){$sum=0};$n=[int][math]::Ceiling($sum);$time.Text='合計 {0:D2}:{1:D2} / 80:00'-f[int][math]::Floor($n/60),($n%60);if($n-gt4800){$time.ForeColor=[Drawing.Color]::Firebrick}else{$time.ForeColor=[Drawing.SystemColors]::ControlText}}
-function Add-Files([string[]]$paths){foreach($p in $paths){if([IO.Path]::GetExtension($p)-ine'.wav'-or($script:Tracks|Where-Object Path -eq $p)){continue};try{$script:Tracks.Add((Read-Wav $p))}catch{[void][System.Windows.Forms.MessageBox]::Show(('{0}: {1}'-f[IO.Path]::GetFileName($p),$_.Exception.Message),'追加できません')}};Refresh-List}
-function Load-Drives{$drive.Items.Clear();try{$m=New-Object -ComObject IMAPI2.MsftDiscMaster2;for($i=0;$i-lt$m.Count;$i++){$id=$m.Item($i);$r=New-Object -ComObject IMAPI2.MsftDiscRecorder2;$r.InitializeDiscRecorder($id);$name=@($r.VolumePathNames)|Select-Object -First 1;if([string]::IsNullOrWhiteSpace($name)){$name='光学ドライブ'};[void]$drive.Items.Add([pscustomobject]@{Id=$id;Label=('{0} ({1} {2})'-f$name,"$($r.VendorId)".Trim(),"$($r.ProductId)".Trim())});[void][Runtime.InteropServices.Marshal]::FinalReleaseComObject($r)};$drive.DisplayMember='Label';if($drive.Items.Count){$drive.SelectedIndex=0}else{$status.Text='光学ドライブがありません。'};[void][Runtime.InteropServices.Marshal]::FinalReleaseComObject($m)}catch{$status.Text='ドライブ取得エラー: '+$_.Exception.Message}}
+function Add-Files([string[]]$paths){$added=0;$skip=0;$dup=0;$files=foreach($p in $paths){if([IO.Directory]::Exists($p)){[IO.Directory]::GetFiles($p,'*.wav')|Sort-Object}else{$p}};foreach($p in $files){if([IO.Path]::GetExtension($p)-ine'.wav'){$skip++;continue};if($script:Tracks|Where-Object Path -eq $p){$dup++;continue};try{$script:Tracks.Add((Read-Wav $p));$added++}catch{[void][System.Windows.Forms.MessageBox]::Show(('{0}: {1}'-f[IO.Path]::GetFileName($p),$_.Exception.Message),'追加できません')}};Refresh-List;$msg='{0}曲を追加しました。'-f$added;if($skip){$msg+='WAV以外の{0}件は対象外です。'-f$skip};if($dup){$msg+='追加済みの{0}件はスキップしました。'-f$dup};$status.Text=$msg}
+function Load-Drives{$drive.Items.Clear();$m=$null;try{$m=New-Object -ComObject IMAPI2.MsftDiscMaster2;$bad=0;for($i=0;$i-lt$m.Count;$i++){$r=$null;try{$id=$m.Item($i);$r=New-Object -ComObject IMAPI2.MsftDiscRecorder2;$r.InitializeDiscRecorder($id);$name=@($r.VolumePathNames)|Select-Object -First 1;if([string]::IsNullOrWhiteSpace($name)){$name='光学ドライブ'};[void]$drive.Items.Add([pscustomobject]@{Id=$id;Label=('{0} ({1} {2})'-f$name,"$($r.VendorId)".Trim(),"$($r.ProductId)".Trim())})}catch{$bad++}finally{if($r){[void][Runtime.InteropServices.Marshal]::FinalReleaseComObject($r)}}};$drive.DisplayMember='Label';if($drive.Items.Count){$drive.SelectedIndex=0;if($bad){$status.Text='{0}台のドライブを取得できませんでした。'-f$bad}}elseif($bad){$status.Text='使用できる光学ドライブがありません（取得失敗 {0}台）。'-f$bad}else{$status.Text='光学ドライブがありません。'}}catch{$status.Text='ドライブ取得エラー: '+$_.Exception.Message}finally{if($m){[void][Runtime.InteropServices.Marshal]::FinalReleaseComObject($m)}}}
 $picker=[System.Windows.Forms.OpenFileDialog]::new();$picker.Filter='PCM WAV (*.wav)|*.wav';$picker.Multiselect=$true
 $add.Add_Click({if($picker.ShowDialog()-eq'OK'){Add-Files $picker.FileNames}})
 $del.Add_Click({foreach($i in @($lv.SelectedIndices|Sort-Object -Descending)){$script:Tracks.RemoveAt([int]$i)};Refresh-List})
-$up.Add_Click({if($lv.SelectedIndices.Count-eq1){$i=$lv.SelectedIndices[0];if($i-gt0){$x=$script:Tracks[$i];$script:Tracks.RemoveAt($i);$script:Tracks.Insert($i-1,$x);Refresh-List;$lv.Items[$i-1].Selected=$true}}})
-$down.Add_Click({if($lv.SelectedIndices.Count-eq1){$i=$lv.SelectedIndices[0];if($i-lt$script:Tracks.Count-1){$x=$script:Tracks[$i];$script:Tracks.RemoveAt($i);$script:Tracks.Insert($i+1,$x);Refresh-List;$lv.Items[$i+1].Selected=$true}}})
-$f.AllowDrop=$true;$f.Add_DragEnter({if($_.Data.GetDataPresent([System.Windows.Forms.DataFormats]::FileDrop)){$_.Effect='Copy'}});$f.Add_DragDrop({Add-Files $_.Data.GetData([System.Windows.Forms.DataFormats]::FileDrop)})
-$lv.Add_DragEnter({if($_.Data.GetDataPresent([System.Windows.Forms.DataFormats]::FileDrop)){$_.Effect='Copy'}});$lv.Add_DragDrop({Add-Files $_.Data.GetData([System.Windows.Forms.DataFormats]::FileDrop)})
+function Move-Track([int]$d){if($lv.SelectedIndices.Count-ne1){return};$i=$lv.SelectedIndices[0];$j=$i+$d;if($j-lt0-or$j-ge$script:Tracks.Count){return};$x=$script:Tracks[$i];$script:Tracks.RemoveAt($i);$script:Tracks.Insert($j,$x);Refresh-List;$lv.Items[$j].Selected=$true}
+$up.Add_Click({Move-Track -1});$down.Add_Click({Move-Track 1})
+$onDragEnter={if($_.Data.GetDataPresent([System.Windows.Forms.DataFormats]::FileDrop)){$_.Effect='Copy'}};$onDragDrop={Add-Files $_.Data.GetData([System.Windows.Forms.DataFormats]::FileDrop)}
+foreach($c in $f,$lv){$c.AllowDrop=$true;$c.Add_DragEnter($onDragEnter);$c.Add_DragDrop($onDragDrop)}
+function Set-Busy([bool]$busy){foreach($c in $add,$del,$up,$down,$burn,$drive){$c.Enabled=!$busy};$f.AllowDrop=!$busy;$lv.AllowDrop=!$busy}
+$burnJob={
+ param($Tracks,$DriveId,$Sync)
+ $ErrorActionPreference='Stop';$w=$null;$r=$null
+ try{
+  $r=New-Object -ComObject IMAPI2.MsftDiscRecorder2;$r.InitializeDiscRecorder($DriveId);$w=New-Object -ComObject IMAPI2.MsftDiscFormat2TrackAtOnce;$w.Recorder=$r;$w.ClientName='Shizuko';$Sync.Status='ディスクを準備しています…';$w.PrepareMedia()
+  $needed=0L;foreach($t in $Tracks){$needed += [math]::Ceiling($t.Length/2352.0)+150};if($needed-gt$w.FreeSectorsOnMedia){throw'ディスクの空き容量が足りません。'}
+  $buf=New-Object byte[] 1048576
+  for($i=0;$i-lt$Tracks.Count;$i++){
+   $t=$Tracks[$i];$Sync.Status='書き込み中 {0}/{1}: {2}'-f($i+1),$Tracks.Count,[IO.Path]::GetFileName($t.Path);$a=New-Object -ComObject ADODB.Stream;$src=$null
+   try{$a.Type=1;$a.Open();$src=[IO.File]::OpenRead($t.Path);$src.Position=$t.Offset;$left=$t.Length;while($left-gt0){$n=$src.Read($buf,0,[int][math]::Min($buf.Length,$left));if($n-le0){throw'WAV読み込みエラー。'};if($n-eq$buf.Length){$a.Write($buf)}else{$part=New-Object byte[] $n;[Array]::Copy($buf,$part,$n);$a.Write($part)};$left-=$n};$pad=(2352-$t.Length%2352)%2352;if($pad){$a.Write((New-Object byte[] $pad))};$a.Position=0;$w.AddAudioTrack($a)
+   }finally{if($src){$src.Dispose()};if($a.State-eq1){$a.Close()};[void][Runtime.InteropServices.Marshal]::FinalReleaseComObject($a)}
+  }
+  $w.ReleaseMedia()
+ }catch{$Sync.Error=$_.Exception.Message;if($w){try{$w.ReleaseMedia()}catch{}}
+ }finally{if($w){[void][Runtime.InteropServices.Marshal]::FinalReleaseComObject($w)};if($r){[void][Runtime.InteropServices.Marshal]::FinalReleaseComObject($r)};$Sync.Done=$true}
+}
+$script:Burn=$null;$timer=[System.Windows.Forms.Timer]::new();$timer.Interval=300
 $burn.Add_Click({
  $sum=($script:Tracks|Measure-Object Seconds -Sum).Sum
  if(!$script:Tracks.Count){[void][System.Windows.Forms.MessageBox]::Show('先にPCM WAVを追加してください。');return};if($sum-gt4800){[void][System.Windows.Forms.MessageBox]::Show('80分を超えています。');return};if($script:Tracks.Count-gt99){[void][System.Windows.Forms.MessageBox]::Show('CDの上限は99曲です。');return};if($null-eq$drive.SelectedItem){[void][System.Windows.Forms.MessageBox]::Show('書き込みドライブがありません。');return}
  if([System.Windows.Forms.MessageBox]::Show('空のCD-R/CD-RWを入れてください。書き込みを開始します。','確認','OKCancel','Question')-ne'OK'){return}
- $burn.Enabled=$false;$w=$null;$r=$null;$temps=[Collections.Generic.List[string]]::new()
- try{$r=New-Object -ComObject IMAPI2.MsftDiscRecorder2;$r.InitializeDiscRecorder($drive.SelectedItem.Id);$w=New-Object -ComObject IMAPI2.MsftDiscFormat2TrackAtOnce;$w.Recorder=$r;$w.ClientName='Shizuko';$w.PrepareMedia();$needed=0L;foreach($t in $script:Tracks){$needed += [math]::Ceiling($t.Length/2352.0)+150};if($needed-gt$w.FreeSectorsOnMedia){throw'ディスクの空き容量が足りません。'}
- for($i=0;$i-lt$script:Tracks.Count;$i++){$t=$script:Tracks[$i];$status.Text='書き込み中 {0}/{1}: {2}'-f($i+1),$script:Tracks.Count,[IO.Path]::GetFileName($t.Path);$f.Refresh();$raw=[IO.Path]::Combine([IO.Path]::GetTempPath(),('Shizuko-'+[guid]::NewGuid().ToString('N')+'.pcm'));$temps.Add($raw);$src=[IO.File]::OpenRead($t.Path);$dst=[IO.File]::Create($raw);try{$src.Position=$t.Offset;$left=$t.Length;$buf=New-Object byte[] 1048576;while($left-gt0){$n=$src.Read($buf,0,[int][math]::Min($buf.Length,$left));if($n-le0){throw'WAV読み込みエラー。'};$dst.Write($buf,0,$n);$left-=$n};$pad=(2352-$t.Length%2352)%2352;if($pad){$dst.Write((New-Object byte[] $pad),0,$pad)}}finally{$src.Dispose();$dst.Dispose()};$a=New-Object -ComObject ADODB.Stream;try{$a.Type=1;$a.Open();$a.LoadFromFile($raw);$w.AddAudioTrack($a)}finally{if($a.State-eq1){$a.Close()};[void][Runtime.InteropServices.Marshal]::FinalReleaseComObject($a)}}
- $w.ReleaseMedia();$status.Text='完了';[void][System.Windows.Forms.MessageBox]::Show('音楽CDの書き込みが完了しました。','Shizuko')
- }catch{if($w){try{$w.ReleaseMedia()}catch{}};$status.Text='書き込みに失敗しました。';[void][System.Windows.Forms.MessageBox]::Show(('書き込みエラー: '+$_.Exception.Message),'エラー')
- }finally{foreach($x in $temps){Remove-Item -LiteralPath $x -Force -ErrorAction SilentlyContinue};if($w){[void][Runtime.InteropServices.Marshal]::FinalReleaseComObject($w)};if($r){[void][Runtime.InteropServices.Marshal]::FinalReleaseComObject($r)};$burn.Enabled=$true}
+ $sync=[hashtable]::Synchronized(@{Status='書き込みを開始しています…';Done=$false;Error=$null})
+ $rs=[runspacefactory]::CreateRunspace();$rs.ApartmentState='STA';$rs.Open();$ps=[powershell]::Create();$ps.Runspace=$rs
+ [void]$ps.AddScript($burnJob).AddArgument($script:Tracks.ToArray()).AddArgument($drive.SelectedItem.Id).AddArgument($sync)
+ Set-Busy $true;$script:Burn=@{PS=$ps;Sync=$sync;Handle=$ps.BeginInvoke()};$timer.Start()
 })
+$timer.Add_Tick({
+ $b=$script:Burn;$status.Text=$b.Sync.Status;if(!$b.Sync.Done){return}
+ $timer.Stop();try{[void]$b.PS.EndInvoke($b.Handle)}catch{if(!$b.Sync.Error){$b.Sync.Error=$_.Exception.Message}}finally{$b.PS.Runspace.Dispose();$b.PS.Dispose()};$script:Burn=$null;Set-Busy $false
+ if($b.Sync.Error){$status.Text='書き込みに失敗しました。';[void][System.Windows.Forms.MessageBox]::Show(('書き込みエラー: '+$b.Sync.Error),'エラー')}else{$status.Text='完了';[void][System.Windows.Forms.MessageBox]::Show('音楽CDの書き込みが完了しました。','Shizuko')}
+})
+$f.Add_FormClosing({if($script:Burn){$_.Cancel=$true;[void][System.Windows.Forms.MessageBox]::Show('書き込み中は終了できません。完了までお待ちください。','Shizuko')}})
 $f.Add_Shown({Load-Drives});[void]$f.ShowDialog()
